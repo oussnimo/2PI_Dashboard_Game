@@ -142,120 +142,85 @@ class SourceInputController extends Controller
      * Extract transcript/captions from a YouTube video.
      *
      * Strategy (tried in order):
-     * 1. YouTube's public timedtext list API → fetch best track (most reliable, no API key)
-     * 2. ytInitialPlayerResponse JSON embedded in the watch page (secondary fallback)
+     * 1. YouTube's public timedtext list API → fast, works on some videos
+     * 2. YouTube's internal youtubei/v1/player API → most reliable, works for auto-captions
      * 3. Video title + description only (last resort — very limited, flagged as warning)
      */
     private function handleYoutube(string $videoId): \Illuminate\Http\JsonResponse
     {
         \Log::info("🎬 [SourceInput] Extracting YouTube content for video: {$videoId}");
 
-        $title = null;
-
         // ─────────────────────────────────────────────────────────────────────
-        // TIER 1: Direct timedtext list API (public, no auth required)
-        // YouTube exposes a caption track listing at:
-        // https://www.youtube.com/api/timedtext?type=list&v={VIDEO_ID}
-        // which returns an XML list of available caption tracks.
+        // TIER 1: Direct timedtext list API
         // ─────────────────────────────────────────────────────────────────────
         $transcript = $this->fetchViaTimedtextApi($videoId);
 
         if ($transcript !== null) {
             \Log::info('✅ [Tier-1] Transcript via timedtext API. Length: ' . strlen($transcript));
-
-            // Fetch title separately from a lightweight oembed call
-            $title = $this->fetchYoutubeTitleViaOembed($videoId);
-
-            $fullText = ($title ? "Video Title: {$title}\n\n" : '') . "COURSE TRANSCRIPT:\n{$transcript}";
-            $fullText = $this->cleanAndTruncate($fullText);
-
+            // ✅ REMOVED: Do NOT include title in the extracted text — it causes AI to ask about metadata
+            // Old: $fullText = ($title ? "Video Title: {$title}\n\n" : '') . "COURSE TRANSCRIPT:\n{$transcript}";
+            // New: Only send the transcript content, no title/metadata
+            $fullText = "COURSE TRANSCRIPT:\n{$transcript}";
             return response()->json([
                 'success' => true,
-                'text'    => $fullText,
+                'text'    => $this->cleanAndTruncate($fullText),
                 'length'  => strlen($fullText),
                 'source'  => 'youtube_transcript',
             ], 200);
         }
 
-        \Log::warning('⚠️ [Tier-1] Timedtext API returned no transcript. Trying page-scrape (Tier-2).');
+        \Log::warning('⚠️ [Tier-1] No transcript. Trying youtubei API (Tier-2).');
 
         // ─────────────────────────────────────────────────────────────────────
-        // TIER 2: Fetch watch page and parse ytInitialPlayerResponse JSON
+        // TIER 2: YouTube's internal youtubei/v1/player API (new)
+        // Same endpoint YouTube's own web player uses → works for auto-captions
         // ─────────────────────────────────────────────────────────────────────
-        try {
-            $pageResponse = Http::timeout(15)
-                ->withHeaders([
-                    'User-Agent'      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept-Language' => 'fr-FR,fr;q=0.9,en;q=0.8',
-                    'Accept'          => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                ])
-                ->get("https://www.youtube.com/watch?v={$videoId}");
+        $tier2 = $this->fetchViaYoutubeiApi($videoId);
 
-            if ($pageResponse->successful()) {
-                $html        = $pageResponse->body();
-                $title       = $this->youtubeTitle($html);
-                $description = $this->youtubeDescription($html);
-                $captionUrl  = $this->youtubeCaptionUrl($html, ['fr', 'en', 'ar', 'es', 'de']);
-
-                if ($captionUrl) {
-                    \Log::info('[Tier-2] Caption URL from ytInitialPlayerResponse.');
-                    $captionResp = Http::timeout(10)->get($captionUrl);
-
-                    if ($captionResp->successful()) {
-                        $transcript = $this->parseCaptionXml($captionResp->body());
-
-                        if (!empty(trim($transcript))) {
-                            $fullText = ($title ? "Video Title: {$title}\n\n" : '') . "COURSE TRANSCRIPT:\n{$transcript}";
-                            $fullText = $this->cleanAndTruncate($fullText);
-
-                            \Log::info('✅ [Tier-2] Transcript via page-scrape. Length: ' . strlen($fullText));
-
-                            return response()->json([
-                                'success' => true,
-                                'text'    => $fullText,
-                                'length'  => strlen($fullText),
-                                'source'  => 'youtube_transcript',
-                            ], 200);
-                        }
-                    }
-                }
-
-                // ─────────────────────────────────────────────────────────────
-                // TIER 3: Title + description fallback — very limited content
-                // Return an error instead of silently generating shallow questions
-                // ─────────────────────────────────────────────────────────────
-                \Log::warning('⚠️ [Tier-3] No captions available. Falling back to description.');
-
-                $fallback = '';
-                if ($title)       $fallback .= "Video Title: {$title}\n\n";
-                if ($description) $fallback .= "Video Description:\n{$description}";
-
-                if (empty(trim($fallback))) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'This video has no captions/subtitles enabled. Try a video that has auto-generated or manual subtitles (check if CC button appears on YouTube).',
-                    ], 422);
-                }
-
-                $fallback = $this->cleanAndTruncate($fallback);
-
-                return response()->json([
-                    'success' => true,
-                    'text'    => $fallback,
-                    'length'  => strlen($fallback),
-                    'source'  => 'youtube_description',
-                    'notice'  => '⚠️ No transcript found — only the video title & description were extracted. Questions may be generic. Use a video with CC/subtitles for better results.',
-                ], 200);
-            }
-
-        } catch (\Exception $e) {
-            \Log::error('❌ YouTube extraction error: ' . $e->getMessage());
+        if ($tier2 !== null) {
+            [$transcript, $title] = $tier2;
+            // ✅ REMOVED: Do NOT include title — it causes AI to ask metadata questions
+            $fullText = "COURSE TRANSCRIPT:\n{$transcript}";
+            \Log::info('✅ [Tier-2] Transcript via youtubei API. Length: ' . strlen($fullText));
+            return response()->json([
+                'success' => true,
+                'text'    => $this->cleanAndTruncate($fullText),
+                'length'  => strlen($fullText),
+                'source'  => 'youtube_transcript',
+            ], 200);
         }
 
+        \Log::warning('⚠️ [Tier-2] No transcript. Falling back to description (Tier-3).');
+
+        // ─────────────────────────────────────────────────────────────────────
+        // TIER 3: Title + description fallback (very limited content)
+        // ✅ NOTE: We still fetch title/description but DO NOT send them to AI
+        // This prevents AI from asking "What is the title?" questions
+        // ─────────────────────────────────────────────────────────────────────
+        $title       = $this->fetchYoutubeTitleViaOembed($videoId);
+        $description = $this->fetchYoutubeDescriptionViaPage($videoId);
+
+        // ✅ ONLY use description as fallback content, NO title
+        $fallback = '';
+        if ($description) $fallback = $description;
+        // Removed: if ($title) $fallback .= "Video Title: {$title}\n\n";
+
+        if (empty(trim($fallback))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This video has no accessible captions. Try a video with CC/subtitles enabled on YouTube.',
+            ], 422);
+        }
+
+        \Log::warning('⚠️ [Tier-3] Using description fallback (title excluded). Length: ' . strlen($fallback));
+
         return response()->json([
-            'success' => false,
-            'message' => 'Could not extract content from this YouTube video. Make sure it is public and has captions enabled.',
-        ], 422);
+            'success' => true,
+            'text'    => $this->cleanAndTruncate($fallback),
+            'length'  => strlen($fallback),
+            'source'  => 'youtube_description',
+            'notice'  => '⚠️ No transcript — only description extracted. Questions may be generic.',
+        ], 200);
     }
 
     /**
@@ -345,6 +310,140 @@ class SourceInputController extends Controller
             \Log::warning('[Tier-1] timedtext API exception: ' . $e->getMessage());
             return null;
         }
+    }
+
+    /**
+     * TIER 2: Use YouTube's internal youtubei/v1/player API.
+     *
+     * This is the same endpoint YouTube's own web player calls.
+     * It reliably returns caption track URLs for videos with auto-generated subtitles.
+     * The API key used here is YouTube's own public key embedded in their web app.
+     *
+     * Returns [$transcript, $title] on success, null on failure.
+     */
+    private function fetchViaYoutubeiApi(string $videoId): ?array
+    {
+        $preferredLangs = ['fr', 'en', 'ar', 'es', 'de'];
+
+        try {
+            \Log::info("[Tier-2] Calling youtubei API for video: {$videoId}");
+
+            // Step 1: POST to youtubei/v1/player with a web client context
+            $apiUrl  = 'https://youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+            $payload = [
+                'videoId' => $videoId,
+                'context' => [
+                    'client' => [
+                        'clientName'    => 'WEB',
+                        'clientVersion' => '2.20231121.08.00',
+                        'hl'            => 'fr',
+                        'gl'            => 'MA',
+                    ],
+                ],
+            ];
+
+            $resp = Http::timeout(15)
+                ->withHeaders([
+                    'Content-Type' => 'application/json',
+                    'User-Agent'   => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Origin'       => 'https://www.youtube.com',
+                    'Referer'      => "https://www.youtube.com/watch?v={$videoId}",
+                ])
+                ->post($apiUrl, $payload);
+
+            if (!$resp->successful()) {
+                \Log::warning('[Tier-2] youtubei API returned HTTP ' . $resp->status());
+                return null;
+            }
+
+            $data = $resp->json();
+
+            // Step 2: Extract title
+            $title = $data['videoDetails']['title'] ?? null;
+
+            // Step 3: Extract caption tracks
+            $tracks = $data['captions']['playerCaptionsTracklistRenderer']['captionTracks'] ?? [];
+
+            if (empty($tracks)) {
+                \Log::warning('[Tier-2] No caption tracks in youtubei response.');
+                return null;
+            }
+
+            \Log::info('[Tier-2] Caption tracks available: ' . json_encode(array_column($tracks, 'languageCode')));
+
+            // Step 4: Pick best language
+            $chosen = null;
+            foreach ($preferredLangs as $lang) {
+                foreach ($tracks as $track) {
+                    if (str_starts_with($track['languageCode'] ?? '', $lang)) {
+                        $chosen = $track;
+                        break 2;
+                    }
+                }
+            }
+            // Prefer auto-generated if available, else take first track
+            if (!$chosen) {
+                foreach ($tracks as $track) {
+                    if (($track['kind'] ?? '') === 'asr') { $chosen = $track; break; }
+                }
+                $chosen = $chosen ?? $tracks[0];
+            }
+
+            $captionUrl  = $chosen['baseUrl'] ?? null;
+            $langCode    = $chosen['languageCode'] ?? 'unknown';
+
+            if (!$captionUrl) {
+                \Log::warning('[Tier-2] No baseUrl in chosen caption track.');
+                return null;
+            }
+
+            \Log::info("[Tier-2] Fetching caption track: lang={$langCode}, url={$captionUrl}");
+
+            // Step 5: Fetch and parse the caption XML
+            $captionResp = Http::timeout(10)->get($captionUrl);
+
+            if (!$captionResp->successful() || empty(trim($captionResp->body()))) {
+                \Log::warning('[Tier-2] Caption fetch failed or empty.');
+                return null;
+            }
+
+            $transcript = $this->parseCaptionXml($captionResp->body());
+
+            if (empty(trim($transcript))) {
+                \Log::warning('[Tier-2] Parsed transcript is empty.');
+                return null;
+            }
+
+            \Log::info('[Tier-2] Transcript parsed. Length: ' . strlen($transcript));
+            return [$transcript, $title];
+
+        } catch (\Exception $e) {
+            \Log::warning('[Tier-2] youtubei API exception: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Fetch video description via a lightweight page scrape (for Tier-3 fallback only).
+     */
+    private function fetchYoutubeDescriptionViaPage(string $videoId): ?string
+    {
+        try {
+            $resp = Http::timeout(10)
+                ->withHeaders([
+                    'User-Agent'      => 'Mozilla/5.0 (compatible)',
+                    'Accept-Language' => 'fr-FR,fr;q=0.9,en;q=0.8',
+                ])
+                ->get("https://www.youtube.com/watch?v={$videoId}");
+
+            if (!$resp->successful()) return null;
+
+            $html = $resp->body();
+            if (preg_match('/<meta\s+(?:name|property)="(?:og:)?description"\s+content="([^"]+)"/i', $html, $m)) {
+                return html_entity_decode($m[1], ENT_QUOTES, 'UTF-8');
+            }
+        } catch (\Exception) {}
+        return null;
     }
 
     /**

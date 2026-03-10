@@ -14,10 +14,9 @@ import {
 import { useLanguage } from "../hooks/useLanguage";
 import toast from "react-hot-toast";
 import AIQuestionGenerator from "./AIQuestionGenerator";
-import LevelForm from "./LevelForm";
 
 
-function InitialForm({ onDataChange, onGoToPreview }) {
+function InitialForm({ onDataChange, onGoToPreview, onGoToLevelForm }) {
   const { t } = useLanguage();
   const [formData, setFormData] = useState({
     course: "",
@@ -29,10 +28,6 @@ function InitialForm({ onDataChange, onGoToPreview }) {
 
   // Control AI Question Generator visibility
   const [showAIGenerator, setShowAIGenerator] = useState(false);
-
-  // Control Manual Level Editor visibility
-  const [showManualEditor, setShowManualEditor] = useState(false);
-  const [currentLevelIndex, setCurrentLevelIndex] = useState(0);
 
   useEffect(() => {
     // Clear form data when component mounts
@@ -66,7 +61,7 @@ function InitialForm({ onDataChange, onGoToPreview }) {
       }));
 
   // ==============================
-  //  "Start Creating" → Manual Editor
+  //  "Start Creating" → go to LevelForm step (in App.jsx)
   // ==============================
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -84,11 +79,9 @@ function InitialForm({ onDataChange, onGoToPreview }) {
     // Close AI panel if open
     setShowAIGenerator(false);
 
-    // Build levels structure if not already present
-    let newLevels = formData.levels;
-    if (!newLevels || newLevels.length === 0) {
-      newLevels = buildEmptyLevels(parseInt(formData.numLevels, 10));
-    }
+    // Build levels structure
+    const numLevels = parseInt(formData.numLevels, 10);
+    const newLevels = buildEmptyLevels(numLevels);
 
     const updatedData = {
       ...formData,
@@ -99,45 +92,10 @@ function InitialForm({ onDataChange, onGoToPreview }) {
     setFormData(updatedData);
     onDataChange(updatedData);
 
-    // Open manual editor starting at level 0
-    setCurrentLevelIndex(0);
-    setShowManualEditor(true);
+    // Hand off to App-level step 2 (LevelForm page)
+    onGoToLevelForm(updatedData);
   };
 
-  // ==============================
-  //  Manual editor: level change callback
-  // ==============================
-  const handleManualLevelChange = (updatedLevel) => {
-    setFormData((prev) => {
-      const newLevels = [...prev.levels];
-      newLevels[currentLevelIndex] = updatedLevel;
-      const updated = { ...prev, levels: newLevels };
-      onDataChange(updated);
-      return updated;
-    });
-  };
-
-  // Next level or finish
-  const handleManualNext = () => {
-    const numLevels = parseInt(formData.numLevels, 10);
-    if (currentLevelIndex < numLevels - 1) {
-      setCurrentLevelIndex((i) => i + 1);
-    } else {
-      // All levels done → go to preview
-      setShowManualEditor(false);
-      onGoToPreview();
-    }
-  };
-
-  const handleManualPrev = () => {
-    if (currentLevelIndex > 0) {
-      setCurrentLevelIndex((i) => i - 1);
-    }
-  };
-
-  const handleManualClose = () => {
-    setShowManualEditor(false);
-  };
 
   //  ============================== AI Questions Handler ================================
   const handleAIQuestionsGenerated = (generatedData) => {
@@ -166,9 +124,6 @@ function InitialForm({ onDataChange, onGoToPreview }) {
       return;
     }
 
-    // Close manual editor if open
-    setShowManualEditor(false);
-
     // Create levels if they don't exist
     if (formData.levels.length === 0) {
       const numLevels = parseInt(formData.numLevels, 10);
@@ -189,18 +144,16 @@ function InitialForm({ onDataChange, onGoToPreview }) {
   }
 
   const numLevels = parseInt(formData.numLevels || 2, 10);
-  const isLastLevel = currentLevelIndex === numLevels - 1;
-  const currentLevel = formData.levels[currentLevelIndex];
 
   return (
     <div className="w-full min-h-screen flex items-center justify-center py-8">
       <div
-        className={`flex gap-8 w-full mx-auto px-4 transition-all duration-500 items-start ${showAIGenerator || showManualEditor ? "max-w-[1400px]" : "max-w-2xl"
+        className={`flex gap-8 w-full mx-auto px-4 transition-all duration-500 items-start ${showAIGenerator ? "max-w-[1400px]" : "max-w-2xl"
           }`}
       >
         {/* ===== LEFT SIDE: INITIAL FORM ===== */}
         <motion.div
-          className={`glass-card p-8 transition-all duration-500 ${showAIGenerator || showManualEditor ? "w-80 flex-shrink-0" : "flex-1"
+          className={`glass-card p-8 transition-all duration-500 ${showAIGenerator ? "w-80 flex-shrink-0" : "flex-1"
             }`}
           initial={{ scale: 0.95, opacity: 0, x: -20 }}
           animate={{ scale: 1, opacity: 1, x: 0 }}
@@ -299,79 +252,6 @@ function InitialForm({ onDataChange, onGoToPreview }) {
               quizData={formData}
               onQuestionsGenerated={handleAIQuestionsGenerated}
             />
-          </motion.div>
-        )}
-
-        {/* ===== RIGHT SIDE: MANUAL LEVEL EDITOR PANEL ===== */}
-        {showManualEditor && currentLevel && (
-          <motion.div
-            className="w-[560px] flex-shrink-0 flex flex-col gap-4"
-            initial={{ scale: 0.95, opacity: 0, x: 20 }}
-            animate={{ scale: 1, opacity: 1, x: 0 }}
-            exit={{ scale: 0.95, opacity: 0, x: 20 }}
-            transition={{ duration: 0.3 }}
-          >
-            {/* Level progress indicator */}
-            <div className="flex items-center justify-between px-1">
-              <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                {t("level") || "Level"} {currentLevelIndex + 1} / {numLevels}
-              </span>
-              <div className="flex gap-1.5">
-                {Array.from({ length: numLevels }, (_, i) => (
-                  <div
-                    key={i}
-                    className={`h-2 w-6 rounded-full transition-all duration-300 ${i === currentLevelIndex
-                      ? "bg-purple-main"
-                      : i < currentLevelIndex
-                        ? "bg-purple-main/40"
-                        : "bg-gray-300 dark:bg-gray-600"
-                      }`}
-                  />
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={handleManualClose}
-                className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors text-gray-500"
-                title="Close manual editor"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* LevelForm for current level */}
-            <LevelForm
-              key={currentLevelIndex}
-              levelNumber={currentLevelIndex + 1}
-              level={currentLevel}
-              onChange={handleManualLevelChange}
-            />
-
-            {/* Navigation buttons */}
-            <div className="flex gap-3">
-              <motion.button
-                type="button"
-                onClick={handleManualPrev}
-                disabled={currentLevelIndex === 0}
-                className="flex-1 btn-secondary py-3 disabled:opacity-40 disabled:cursor-not-allowed"
-                whileHover={{ scale: currentLevelIndex === 0 ? 1 : 1.02 }}
-                whileTap={{ scale: currentLevelIndex === 0 ? 1 : 0.98 }}
-              >
-                ← {t("previous") || "Previous"}
-              </motion.button>
-
-              <motion.button
-                type="button"
-                onClick={handleManualNext}
-                className="flex-1 btn-primary py-3"
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-              >
-                {isLastLevel
-                  ? `✓ ${t("finish") || "Finish"}`
-                  : `${t("next") || "Next"} →`}
-              </motion.button>
-            </div>
           </motion.div>
         )}
       </div>

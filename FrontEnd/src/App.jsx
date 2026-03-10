@@ -22,6 +22,7 @@ import Navbar from "./components/Navbar";
 
 // ======
 import InitialForm from "./components/InitialForm";
+import LevelForm from "./components/LevelForm";
 import Preview from "./components/Preview";
 // ======
 
@@ -89,20 +90,22 @@ function AppContent({ userLoading }) {
     return savedData
       ? JSON.parse(savedData)
       : {
-          course: "",
-          topic: "",
-          gameNumber: "",
-          numLevels: "2",
-          levels: [],
-          player_info: {
-            current_level: 1,
-            lives: 3,
-            score: 0,
-          },
-        };
+        course: "",
+        topic: "",
+        gameNumber: "",
+        numLevels: "2",
+        levels: [],
+        player_info: {
+          current_level: 1,
+          lives: 3,
+          score: 0,
+        },
+      };
   });
 
   const [currentStep, setCurrentStep] = useState(0);
+  // Step 2 — manual level editor state
+  const [currentLevelIndex, setCurrentLevelIndex] = useState(0);
 
   useEffect(() => {
     // Save form data to localStorage whenever it changes
@@ -127,6 +130,7 @@ function AppContent({ userLoading }) {
       },
     });
     setCurrentStep(0);
+    setCurrentLevelIndex(0);
     localStorage.removeItem("quizFormData");
   };
 
@@ -136,32 +140,146 @@ function AppContent({ userLoading }) {
 
   const handleBackToInitial = () => {
     setCurrentStep(0);
+    setCurrentLevelIndex(0);
   };
 
+  // Called by InitialForm when user clicks "Start Creating" (manual mode)
+  const handleGoToLevelForm = (updatedData) => {
+    setQuizData(updatedData);
+    setCurrentLevelIndex(0);
+    setCurrentStep(2);
+  };
+
+  // Level editor: update current level
+  const handleLevelChange = (updatedLevel) => {
+    setQuizData((prev) => {
+      const newLevels = [...prev.levels];
+      newLevels[currentLevelIndex] = updatedLevel;
+      const updated = { ...prev, levels: newLevels };
+      localStorage.setItem("quizFormData", JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  // Level editor: go to next level or finish
+  const handleLevelNext = () => {
+    const numLevels = parseInt(quizData.numLevels, 10);
+    if (currentLevelIndex < numLevels - 1) {
+      setCurrentLevelIndex((i) => i + 1);
+    } else {
+      setCurrentStep(1); // go to Preview
+    }
+  };
+
+  const handleLevelPrev = () => {
+    if (currentLevelIndex > 0) {
+      setCurrentLevelIndex((i) => i - 1);
+    }
+  };
+
+  const numLevels = parseInt(quizData.numLevels || 2, 10);
+  const isLastLevel = currentLevelIndex === numLevels - 1;
+  const currentLevel = quizData.levels?.[currentLevelIndex];
+
   const renderCurrentStep = () => {
+    // ── Step 0: Initial form ──────────────────────────────────────
     if (currentStep === 0) {
       return (
         <InitialForm
           onDataChange={handleQuizDataChange}
           onGoToPreview={handleGoToPreview}
+          onGoToLevelForm={handleGoToLevelForm}
         />
       );
     }
+
+    // ── Step 1: Preview ───────────────────────────────────────────
+    if (currentStep === 1) {
+      return (
+        <div className="space-y-4">
+          <Preview
+            data={quizData}
+            onDataChange={handleQuizDataChange}
+            onCreateNew={resetQuizForm}
+          />
+          <div className="flex justify-start items-center mt-6">
+            <motion.button
+              onClick={handleBackToInitial}
+              className="btn-secondary flex items-center gap-2"
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              <ArrowLeft size={18} /> {t("back_to_levels")}
+            </motion.button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Step 2: Manual Level Editor ───────────────────────────────
     return (
-      <div className="space-y-4">
-        <Preview
-          data={quizData}
-          onDataChange={handleQuizDataChange}
-          onCreateNew={resetQuizForm}
-        />
-        <div className="flex justify-start items-center mt-6">
+      <div className="max-w-2xl mx-auto w-full space-y-4">
+        {/* Level progress bar */}
+        <div className="flex items-center justify-between px-1">
+          <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+            {t("level") || "Level"} {currentLevelIndex + 1} / {numLevels}
+          </span>
+          <div className="flex gap-1.5">
+            {Array.from({ length: numLevels }, (_, i) => (
+              <div
+                key={i}
+                className={`h-2 w-6 rounded-full transition-all duration-300 ${i === currentLevelIndex
+                    ? "bg-purple-main"
+                    : i < currentLevelIndex
+                      ? "bg-purple-main/40"
+                      : "bg-gray-300 dark:bg-gray-600"
+                  }`}
+              />
+            ))}
+          </div>
           <motion.button
+            type="button"
             onClick={handleBackToInitial}
-            className="btn-secondary flex items-center gap-2"
+            className="btn-secondary flex items-center gap-1.5 text-sm py-1.5 px-3"
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
           >
-            <ArrowLeft size={18} /> {t("back_to_levels")}
+            <ArrowLeft size={14} /> {t("back") || "Back"}
+          </motion.button>
+        </div>
+
+        {/* LevelForm */}
+        {currentLevel && (
+          <LevelForm
+            key={currentLevelIndex}
+            levelNumber={currentLevelIndex + 1}
+            level={currentLevel}
+            onChange={handleLevelChange}
+          />
+        )}
+
+        {/* Navigation buttons */}
+        <div className="flex gap-3">
+          <motion.button
+            type="button"
+            onClick={handleLevelPrev}
+            disabled={currentLevelIndex === 0}
+            className="flex-1 btn-secondary py-3 disabled:opacity-40 disabled:cursor-not-allowed"
+            whileHover={{ scale: currentLevelIndex === 0 ? 1 : 1.02 }}
+            whileTap={{ scale: currentLevelIndex === 0 ? 1 : 0.98 }}
+          >
+            ← {t("previous") || "Previous"}
+          </motion.button>
+          <motion.button
+            type="button"
+            onClick={handleLevelNext}
+            className="flex-1 btn-primary py-3"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            {isLastLevel
+              ? `✓ ${t("finish") || "Finish"}`
+              : `${t("next") || "Next"} →`}
           </motion.button>
         </div>
       </div>

@@ -136,10 +136,8 @@ function Preview({ data, onDataChange, onCreateNew }) {
     // Add notification for saving quiz with specific details
     addNotification(
       t("preview.quizSaved") || "Quiz Saved",
-      `${t("course_name") || "Course"}: ${editedData.course}, ${
-        t("topic") || "Topic"
-      }: ${editedData.topic}, ${t("game_number") || "Game"}: ${
-        editedData.gameNumber
+      `${t("course_name") || "Course"}: ${editedData.course}, ${t("topic") || "Topic"
+      }: ${editedData.topic}, ${t("game_number") || "Game"}: ${editedData.gameNumber
       } - ${t("preview.savedSuccessfully") || "saved successfully"}`,
       "success",
     );
@@ -176,9 +174,8 @@ function Preview({ data, onDataChange, onCreateNew }) {
     } catch (error) {
       addNotification(
         t("preview.exportError") || "Export Error",
-        `${t("course_name") || "Course"}: ${editedData.course} - ${
-          t("preview.exportErrorMessage") ||
-          "An error occurred while exporting the quiz"
+        `${t("course_name") || "Course"}: ${editedData.course} - ${t("preview.exportErrorMessage") ||
+        "An error occurred while exporting the quiz"
         }`,
         "error",
       );
@@ -194,7 +191,7 @@ function Preview({ data, onDataChange, onCreateNew }) {
     addNotification(
       t("preview.newQuizStarted") || "New Quiz Started",
       t("preview.newQuizStartedMessage") ||
-        "You've started creating a new quiz. Fill in all required fields to complete the quiz.",
+      "You've started creating a new quiz. Fill in all required fields to complete the quiz.",
       "info",
     );
 
@@ -225,7 +222,7 @@ function Preview({ data, onDataChange, onCreateNew }) {
             whileTap={{ scale: 0.98 }}
           >
             <FileJson size={18} />
-            {t("export_json")}
+            {t("export_scorm")}
           </motion.button>
 
           <motion.button
@@ -239,11 +236,10 @@ function Preview({ data, onDataChange, onCreateNew }) {
           </motion.button>
           <motion.button
             onClick={() => (isEditing ? handleSave() : setIsEditing(true))} // =====
-            className={`flex items-center justify-center gap-2 px-4 py-2 rounded-xl transition-all duration-200 ${
-              isEditing
+            className={`flex items-center justify-center gap-2 px-4 py-2 rounded-xl transition-all duration-200 ${isEditing
                 ? "bg-yellow-main text-gray-900 hover:bg-yellow-main/80"
                 : "bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-            }`}
+              }`}
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
           >
@@ -485,9 +481,8 @@ function Preview({ data, onDataChange, onCreateNew }) {
                               );
                             }
                           }}
-                          className={`ml-4 ${
-                            isEditing ? "cursor-pointer" : "cursor-default"
-                          }`}
+                          className={`ml-4 ${isEditing ? "cursor-pointer" : "cursor-default"
+                            }`}
                         >
                           {answer.is_true ? (
                             <CheckCircle

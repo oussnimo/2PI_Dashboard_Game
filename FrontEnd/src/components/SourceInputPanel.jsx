@@ -1,69 +1,97 @@
 import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Link, MessageSquare, Upload, X, Loader, CheckCircle, AlertCircle, Youtube } from "lucide-react";
+import { FileText, Link, X, Loader, CheckCircle, Youtube, Plus } from "lucide-react";
 import toast from "react-hot-toast";
 import axios from "axios";
 
 /**
- * SourceInputPanel Component
+ * SourceInputPanel — Unified ChatGPT-style single input
  *
- * Provides three input methods for the AI Quiz Generator:
- * - "Text Prompt"  : classic free-text prompt (existing behaviour)
- * - "Upload File"  : drag-and-drop / button upload for PDF, TXT, DOCX
- * - "Paste Link"   : URL input that fetches and extracts webpage text
+ * One textarea where the user:
+ *   - Types a prompt directly
+ *   - Pastes URLs (auto-detected, shown as chips below — up to 2)
+ *   - Attaches a file via the "+" button (shown as a chip below)
  *
  * Props:
- *   - prompt         : string     – current text prompt value
- *   - onPromptChange : fn(str)    – called when text prompt changes
- *   - onSourceReady  : fn(str)    – called with extracted text from file/URL
- *   - sourceText     : string     – currently extracted source text (controlled)
- *   - onClearSource  : fn()       – called when source text is cleared
+ *   - prompt            : string    – current text prompt value
+ *   - onPromptChange    : fn(str)   – called when text prompt changes
+ *   - onSourceReady     : fn(str)   – called with extracted text from file/URL
+ *   - sourceText        : string    – currently extracted source text (controlled)
+ *   - onClearSource     : fn()      – called when source text is cleared
+ *   - onUrlChipsChange  : fn(urls)  – called when URL chip array changes (array of up to 2 strings)
+ *   - onFileChange      : fn(file)  – called when file is attached/removed
  */
-function SourceInputPanel({ prompt, onPromptChange, onSourceReady, sourceText, onClearSource }) {
-    // Active tab: "prompt" | "file" | "url"
-    const [activeTab, setActiveTab] = useState("prompt");
+const MAX_URLS = 2;
 
-    // File upload state
-    const [isDragging, setIsDragging] = useState(false);
+function SourceInputPanel({ prompt, onPromptChange, onSourceReady, sourceText, onClearSource, onUrlChipsChange, onFileChange }) {
+
+    // ── File state ──────────────────────────────────────────────────────────
     const [uploadedFile, setUploadedFile] = useState(null);
     const [isExtracting, setIsExtracting] = useState(false);
     const fileInputRef = useRef(null);
 
-    // URL state
-    const [url, setUrl] = useState("");
+    // ── URL chips state (array of up to MAX_URLS strings) ───────────────────
+    const [urlChips, setUrlChips] = useState([]);   // ["https://...", "https://..."]
     const [isFetching, setIsFetching] = useState(false);
-    const [urlSourceType, setUrlSourceType] = useState(null); // 'youtube_transcript' | 'youtube_description' | 'webpage' | null
-    const [urlNotice, setUrlNotice] = useState(null);   // Optional notice from API (e.g. fallback warning)
+    const [urlSourceTypes, setUrlSourceTypes] = useState([]); // mirrors urlChips indexing
 
-    // Detect YouTube link for visual feedback
-    const isYoutubeUrl = (u) => /(?:youtube\.com\/(?:watch|shorts|live|embed)|youtu\.be\/)/i.test(u);
+    // ── Drag state ───────────────────────────────────────────────────────────
+    const [isDragOver, setIsDragOver] = useState(false);
 
     const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000/api/";
     const token = localStorage.getItem("token") || sessionStorage.getItem("token");
+    const authHeaders = { Authorization: `Bearer ${token}` };
 
-    const authHeaders = {
-        Authorization: `Bearer ${token}`,
+    // ── URL auto-detection ───────────────────────────────────────────────────
+    const URL_REGEX = /https?:\/\/[^\s]+/gi;
+    const isYoutubeUrl = (u) => /(?:youtube\.com\/(?:watch|shorts|live|embed)|youtu\.be\/)/i.test(u);
+
+    const handleTextareaChange = (e) => {
+        const raw = e.target.value;
+        const matches = raw.match(URL_REGEX);
+
+        if (matches && matches.length > 0) {
+            const detectedUrl = matches[0];
+            // Only add if not already in chips and we haven't hit the limit
+            if (!urlChips.includes(detectedUrl) && urlChips.length < MAX_URLS) {
+                const withoutUrl = raw.replace(detectedUrl, "").replace(/^\s+|\s+$/g, "").replace(/\s{2,}/g, " ");
+                onPromptChange(withoutUrl);
+                const newChips = [...urlChips, detectedUrl];
+                setUrlChips(newChips);
+                setUrlSourceTypes((prev) => [...prev, null]);
+                onClearSource();
+                onUrlChipsChange?.(newChips);
+            } else if (urlChips.includes(detectedUrl)) {
+                // URL already added — just strip from textarea
+                const withoutUrl = raw.replace(detectedUrl, "").replace(/^\s+|\s+$/g, "").replace(/\s{2,}/g, " ");
+                onPromptChange(withoutUrl);
+            } else {
+                // Limit reached
+                onPromptChange(raw);
+                toast.error(`Maximum ${MAX_URLS} URLs allowed.`);
+            }
+        } else {
+            onPromptChange(raw);
+        }
     };
 
-    // ==============================
-    //  TAB DEFINITIONS
-    // ==============================
-    const tabs = [
-        { id: "prompt", label: "Text Prompt", icon: MessageSquare },
-        { id: "file", label: "Upload File", icon: Upload },
-        { id: "url", label: "Paste Link", icon: Link },
-    ];
+    const removeUrlChip = (index) => {
+        const newChips = urlChips.filter((_, i) => i !== index);
+        const newTypes = urlSourceTypes.filter((_, i) => i !== index);
+        setUrlChips(newChips);
+        setUrlSourceTypes(newTypes);
+        if (newChips.length === 0) onClearSource();
+        onUrlChipsChange?.(newChips);
+    };
 
-    // ==============================
-    //  FILE UPLOAD HELPERS
-    // ==============================
+    // ── File upload ──────────────────────────────────────────────────────────
     const ACCEPTED_TYPES = [".pdf", ".txt", ".docx", ".doc"];
     const MAX_SIZE_MB = 5;
 
     const validateFile = (file) => {
         const ext = "." + file.name.split(".").pop().toLowerCase();
         if (!ACCEPTED_TYPES.includes(ext)) {
-            toast.error(`Unsupported file type. Please upload a PDF, TXT, or DOCX file.`);
+            toast.error("Unsupported file type. Please upload a PDF, TXT, or DOCX file.");
             return false;
         }
         if (file.size > MAX_SIZE_MB * 1024 * 1024) {
@@ -76,7 +104,8 @@ function SourceInputPanel({ prompt, onPromptChange, onSourceReady, sourceText, o
     const handleFileSelect = (file) => {
         if (!validateFile(file)) return;
         setUploadedFile(file);
-        onClearSource(); // Clear previous extracted text when a new file is selected
+        onClearSource();
+        onFileChange?.(file);
     };
 
     const handleFileInputChange = (e) => {
@@ -84,28 +113,15 @@ function SourceInputPanel({ prompt, onPromptChange, onSourceReady, sourceText, o
         if (file) handleFileSelect(file);
     };
 
-    const handleDrop = (e) => {
-        e.preventDefault();
-        setIsDragging(false);
-        const file = e.dataTransfer.files?.[0];
-        if (file) handleFileSelect(file);
-    };
-
     const handleExtractFile = async () => {
         if (!uploadedFile) return;
         setIsExtracting(true);
-
         const formData = new FormData();
         formData.append("file", uploadedFile);
-
         try {
             const response = await axios.post(`${apiUrl}extract-file`, formData, {
-                headers: {
-                    ...authHeaders,
-                    "Content-Type": "multipart/form-data",
-                },
+                headers: { ...authHeaders, "Content-Type": "multipart/form-data" },
             });
-
             if (response.data.success) {
                 onSourceReady(response.data.text);
                 toast.success("Text extracted successfully!");
@@ -120,293 +136,197 @@ function SourceInputPanel({ prompt, onPromptChange, onSourceReady, sourceText, o
         }
     };
 
-    const handleRemoveFile = () => {
+    const removeFile = () => {
         setUploadedFile(null);
         onClearSource();
+        onFileChange?.(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
     };
 
-    // ==============================
-    //  URL FETCH HELPER
-    // ==============================
-    const handleFetchUrl = async () => {
-        if (!url.trim()) {
-            toast.error("Please enter a URL.");
-            return;
-        }
-        setIsFetching(true);
-        setUrlNotice(null);
-
-        try {
-            const response = await axios.post(
-                `${apiUrl}extract-url`,
-                { url: url.trim() },
-                { headers: { ...authHeaders, "Content-Type": "application/json" } }
-            );
-
-            if (response.data.success) {
-                const sourceType = response.data.source || 'webpage';
-                const notice = response.data.notice || null;
-
-                setUrlSourceType(sourceType);
-                setUrlNotice(notice);
-                onSourceReady(response.data.text);
-
-                const successMsg = sourceType === 'youtube_transcript'
-                    ? '🎬 YouTube transcript extracted!'
-                    : sourceType === 'youtube_description'
-                        ? '🎬 YouTube info extracted (no captions found).'
-                        : '🔗 Page content extracted!';
-
-                toast.success(successMsg);
-            } else {
-                toast.error(response.data.message || "Failed to fetch URL.");
-            }
-        } catch (error) {
-            const msg = error.response?.data?.message || error.message || "An error occurred";
-            toast.error(msg);
-        } finally {
-            setIsFetching(false);
-        }
+    // ── Drag and drop ────────────────────────────────────────────────────────
+    const handleDragOver = (e) => { e.preventDefault(); setIsDragOver(true); };
+    const handleDragLeave = () => setIsDragOver(false);
+    const handleDrop = (e) => {
+        e.preventDefault();
+        setIsDragOver(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file) handleFileSelect(file);
     };
 
-    // ==============================
-    //  RENDER
-    // ==============================
-    return (
-        <div className="space-y-3">
+    const hasChips = urlChips.length > 0 || !!uploadedFile;
+    const canAddMoreUrls = urlChips.length < MAX_URLS;
 
-            {/* ===== TAB SWITCHER ===== */}
-            <div className="flex bg-gray-100 dark:bg-gray-700/50 rounded-xl p-1 gap-1">
-                {tabs.map(({ id, label, icon: Icon }) => (
-                    <motion.button
-                        key={id}
-                        type="button"
-                        onClick={() => setActiveTab(id)}
-                        className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-medium transition-all duration-200 ${activeTab === id
-                            ? "bg-white dark:bg-gray-800 text-purple-main dark:text-purple-light shadow-sm"
-                            : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
-                            }`}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                    >
-                        <Icon size={13} />
-                        <span className="hidden sm:inline">{label}</span>
-                    </motion.button>
-                ))}
+    // ── Render ───────────────────────────────────────────────────────────────
+    return (
+        <div
+            className={`rounded-2xl border transition-all duration-200 overflow-hidden ${isDragOver
+                ? "border-purple-main bg-purple-main/10 shadow-lg"
+                : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/60"
+                }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            {/* ── Main textarea ── */}
+            <div className="relative">
+                <textarea
+                    value={prompt}
+                    onChange={handleTextareaChange}
+                    placeholder={
+                        hasChips
+                            ? canAddMoreUrls
+                                ? "Add a description, or paste a second URL…"
+                                : "Add a description of what you want from these sources…"
+                            : "Write your prompt, or paste a URL / drag a file here…"
+                    }
+                    className="w-full bg-transparent resize-none text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 px-4 pt-4 pb-2 min-h-[80px] outline-none"
+                    rows={3}
+                />
             </div>
 
-            {/* ===== TAB CONTENT ===== */}
-            <AnimatePresence mode="wait">
-
-                {/* --- TEXT PROMPT TAB --- */}
-                {activeTab === "prompt" && (
+            {/* ── Chips row ── */}
+            <AnimatePresence>
+                {hasChips && (
                     <motion.div
-                        key="prompt"
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -6 }}
-                        transition={{ duration: 0.18 }}
+                        className="flex flex-wrap gap-2 px-4 pb-2"
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
                     >
-                        <textarea
-                            value={prompt}
-                            onChange={(e) => onPromptChange(e.target.value)}
-                            placeholder="e.g., Generate 5 questions about quadratic equations at different difficulty levels."
-                            className="input-field w-full h-24 resize-none text-sm"
-                        />
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            💡 Be specific for better results.
-                        </p>
-                    </motion.div>
-                )}
+                        {/* File chip */}
+                        {uploadedFile && (
+                            <motion.div
+                                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/30 text-xs font-medium text-purple-700 dark:text-purple-300 max-w-[200px]"
+                                initial={{ scale: 0.8, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0.8, opacity: 0 }}
+                            >
+                                <FileText size={12} className="flex-shrink-0" />
+                                <span className="truncate">{uploadedFile.name}</span>
+                                {isExtracting && <Loader size={11} className="animate-spin flex-shrink-0" />}
+                                {sourceText && urlChips.length === 0 && <CheckCircle size={12} className="flex-shrink-0 text-green-500" />}
+                                <button
+                                    type="button"
+                                    onClick={removeFile}
+                                    className="flex-shrink-0 ml-0.5 p-0.5 hover:bg-purple-200 dark:hover:bg-purple-800 rounded-full transition-colors"
+                                >
+                                    <X size={10} />
+                                </button>
+                            </motion.div>
+                        )}
 
-                {/* --- UPLOAD FILE TAB --- */}
-                {activeTab === "file" && (
-                    <motion.div
-                        key="file"
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -6 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-2"
-                    >
-                        {!uploadedFile ? (
-                            /* DROP ZONE */
-                            <div
-                                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                                onDragLeave={() => setIsDragging(false)}
-                                onDrop={handleDrop}
-                                onClick={() => fileInputRef.current?.click()}
-                                className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all duration-200 ${isDragging
-                                    ? "border-purple-main bg-purple-main/10 scale-[1.02]"
-                                    : "border-gray-300 dark:border-gray-600 hover:border-purple-main dark:hover:border-purple-light hover:bg-purple-main/5"
+                        {/* URL chips — up to 2 */}
+                        {urlChips.map((chip, index) => (
+                            <motion.div
+                                key={chip}
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium max-w-[220px] ${isYoutubeUrl(chip)
+                                    ? "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                                    : "border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
                                     }`}
+                                initial={{ scale: 0.8, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0.8, opacity: 0 }}
                             >
-                                <Upload size={24} className="mx-auto mb-2 text-gray-400 dark:text-gray-500" />
-                                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">
-                                    Drop your file here or <span className="text-purple-main dark:text-purple-light">browse</span>
-                                </p>
-                                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                                    PDF, TXT, DOCX — max 5 MB
-                                </p>
-                                <input
-                                    ref={fileInputRef}
-                                    type="file"
-                                    accept=".pdf,.txt,.docx,.doc"
-                                    className="hidden"
-                                    onChange={handleFileInputChange}
-                                />
-                            </div>
-                        ) : (
-                            /* FILE SELECTED CARD */
-                            <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 space-y-2">
-                                <div className="flex items-center gap-2">
-                                    <FileText size={16} className="text-purple-main flex-shrink-0" />
-                                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-1 truncate">
-                                        {uploadedFile.name}
-                                    </span>
-                                    <span className="text-xs text-gray-400">
-                                        {(uploadedFile.size / 1024).toFixed(0)} KB
-                                    </span>
-                                    <button
-                                        type="button"
-                                        onClick={handleRemoveFile}
-                                        className="p-0.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
-                                    >
-                                        <X size={14} className="text-gray-400" />
-                                    </button>
-                                </div>
-
-                                {/* Source text preview */}
-                                {sourceText && (
-                                    <div className="p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-                                        <div className="flex items-center gap-1 mb-1">
-                                            <CheckCircle size={12} className="text-green-600 dark:text-green-400" />
-                                            <span className="text-xs font-medium text-green-700 dark:text-green-300">
-                                                Text extracted ({sourceText.length} chars)
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2">
-                                            {sourceText.substring(0, 120)}…
-                                        </p>
-                                    </div>
-                                )}
-
-                                {!sourceText && (
-                                    <motion.button
-                                        type="button"
-                                        onClick={handleExtractFile}
-                                        disabled={isExtracting}
-                                        className="w-full btn-secondary text-xs py-2 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                        whileHover={{ scale: isExtracting ? 1 : 1.02 }}
-                                        whileTap={{ scale: isExtracting ? 1 : 0.98 }}
-                                    >
-                                        {isExtracting ? (
-                                            <><Loader size={13} className="animate-spin" /> Extracting…</>
-                                        ) : (
-                                            <><FileText size={13} /> Extract Text</>
-                                        )}
-                                    </motion.button>
-                                )}
-                            </div>
-                        )}
-
-                        <p className="text-xs text-gray-400 dark:text-gray-500">
-                            📄 The AI will base questions <strong>strictly</strong> on the uploaded document.
-                        </p>
-                    </motion.div>
-                )}
-
-                {/* --- PASTE LINK TAB --- */}
-                {activeTab === "url" && (
-                    <motion.div
-                        key="url"
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -6 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-2"
-                    >
-                        <div className="flex gap-2">
-                            {/* YouTube badge */}
-                            {isYoutubeUrl(url) && (
-                                <div className="flex items-center gap-1 px-2 py-1 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex-shrink-0">
-                                    <Youtube size={12} className="text-red-500" />
-                                    <span className="text-xs text-red-600 dark:text-red-400 font-medium">YouTube</span>
-                                </div>
-                            )}
-                            <input
-                                type="url"
-                                value={url}
-                                onChange={(e) => { setUrl(e.target.value); onClearSource(); setUrlSourceType(null); setUrlNotice(null); }}
-                                placeholder="https://youtube.com/watch?v=... or any webpage"
-                                className="input-field flex-1 text-sm !mb-0"
-                            />
-                            <motion.button
-                                type="button"
-                                onClick={handleFetchUrl}
-                                disabled={isFetching || !url.trim()}
-                                className="btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                                whileHover={{ scale: isFetching ? 1 : 1.02 }}
-                                whileTap={{ scale: isFetching ? 1 : 0.98 }}
-                            >
-                                {isFetching ? (
-                                    <><Loader size={13} className="animate-spin" /> Fetching…</>
+                                {isYoutubeUrl(chip) ? (
+                                    <Youtube size={12} className="flex-shrink-0" />
                                 ) : (
-                                    <><Link size={13} /> Fetch</>
+                                    <Link size={12} className="flex-shrink-0" />
                                 )}
-                            </motion.button>
+                                {/* Label: "URL 1" or "URL 2" prefix when there are 2 */}
+                                {urlChips.length > 1 && (
+                                    <span className="font-bold opacity-60 flex-shrink-0">#{index + 1}</span>
+                                )}
+                                <span className="truncate">
+                                    {chip.replace(/^https?:\/\//, "").slice(0, 28)}
+                                    {chip.length > 33 ? "…" : ""}
+                                </span>
+                                {isFetching && <Loader size={11} className="animate-spin flex-shrink-0" />}
+                                {sourceText && (
+                                    <CheckCircle size={12} className="flex-shrink-0 text-green-500" />
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={() => removeUrlChip(index)}
+                                    className="flex-shrink-0 ml-0.5 p-0.5 hover:bg-current/20 rounded-full transition-colors opacity-60 hover:opacity-100"
+                                >
+                                    <X size={10} />
+                                </button>
+                            </motion.div>
+                        ))}
+
+                        {/* "Add URL" hint when 1 chip present and limit not reached */}
+                        {urlChips.length === 1 && canAddMoreUrls && (
+                            <motion.span
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-full border border-dashed border-gray-300 dark:border-gray-600 text-xs text-gray-400 dark:text-gray-500"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                            >
+                                <Plus size={10} />
+                                Paste a 2nd URL above
+                            </motion.span>
+                        )}
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* ── Extracted source text badge ── */}
+            <AnimatePresence>
+                {sourceText && (
+                    <motion.div
+                        className="mx-4 mb-2 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                    >
+                        <div className="flex items-center gap-1">
+                            <CheckCircle size={11} className="text-green-600 dark:text-green-400" />
+                            <span className="text-xs font-medium text-green-700 dark:text-green-300">
+                                {urlChips.length > 1
+                                    ? `${urlChips.length} sources ready`
+                                    : urlSourceTypes[0] === "youtube_transcript"
+                                        ? "YouTube transcript ready"
+                                        : urlSourceTypes[0] === "youtube_description"
+                                            ? "YouTube info ready (no captions)"
+                                            : urlSourceTypes[0] === "webpage"
+                                                ? "Page content ready"
+                                                : "File content ready"}
+                                {" "}({sourceText.length} chars)
+                            </span>
                         </div>
-
-                        {/* Extracted URL text preview */}
-                        {sourceText && (
-                            <div className="p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-                                <div className="flex items-center justify-between mb-1">
-                                    <div className="flex items-center gap-1">
-                                        {urlSourceType === 'youtube_transcript' && <Youtube size={12} className="text-red-500" />}
-                                        {urlSourceType === 'youtube_description' && <Youtube size={12} className="text-orange-500" />}
-                                        {urlSourceType === 'webpage' && <CheckCircle size={12} className="text-green-600 dark:text-green-400" />}
-                                        <span className="text-xs font-medium text-green-700 dark:text-green-300">
-                                            {urlSourceType === 'youtube_transcript' && 'YouTube transcript extracted'}
-                                            {urlSourceType === 'youtube_description' && 'YouTube info extracted (no captions)'}
-                                            {urlSourceType === 'webpage' && 'Page content extracted'}
-                                            {!urlSourceType && 'Content extracted'}
-                                            {' '}({sourceText.length} chars)
-                                        </span>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => { onClearSource(); setUrlSourceType(null); setUrlNotice(null); }}
-                                        className="text-gray-400 hover:text-gray-600 transition-colors"
-                                    >
-                                        <X size={12} />
-                                    </button>
-                                </div>
-                                {urlNotice && (
-                                    <p className="text-xs text-amber-600 dark:text-amber-400 mb-1 flex items-center gap-1">
-                                        <AlertCircle size={11} /> {urlNotice}
-                                    </p>
-                                )}
-                                <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2">
-                                    {sourceText.substring(0, 120)}…
-                                </p>
-                            </div>
-                        )}
-
-                        {!sourceText && url && (
-                            <div className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
-                                <AlertCircle size={12} />
-                                Click "Fetch" to extract content from this URL.
-                            </div>
-                        )}
-
-                        <p className="text-xs text-gray-400 dark:text-gray-500">
-                            🔗 Supports YouTube videos (with captions) and any public webpage.
+                        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1 mt-0.5">
+                            {sourceText.substring(0, 100)}…
                         </p>
                     </motion.div>
                 )}
-
             </AnimatePresence>
+
+            {/* ── Bottom toolbar ── */}
+            <div className="flex items-center gap-3 px-3 pb-3 pt-1">
+                {/* "+" file attach button */}
+                <motion.button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Attach a file (PDF, TXT, DOCX)"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-main/10 border border-purple-main/30 text-purple-main dark:text-purple-light hover:bg-purple-main/20 hover:border-purple-main transition-all duration-200 text-xs font-semibold"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                >
+                    <Plus size={13} />
+                    <span>Attach file</span>
+                </motion.button>
+                <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                    PDF, TXT, DOCX — or drag &amp; drop · up to {MAX_URLS} URLs
+                </span>
+            </div>
+
+            {/* Hidden file input */}
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.txt,.docx,.doc"
+                className="hidden"
+                onChange={handleFileInputChange}
+            />
         </div>
     );
 }

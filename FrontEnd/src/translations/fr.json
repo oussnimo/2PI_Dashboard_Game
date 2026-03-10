@@ -148,7 +148,7 @@
     "exportFailedMessage": "Échec de l'exportation des données du quiz vers le serveur",
     "exportErrorMessage": "Une erreur s'est produite lors de l'exportation du quiz"
   },
-  "export_json": "Exporter SCORM",
+  "export_scorm": "Exporter SCORM",
   "save_changes": "Enregistrer les modifications",
   "edit": "Modifier",
   "important": "Important",

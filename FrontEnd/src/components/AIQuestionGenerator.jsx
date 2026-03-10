@@ -31,7 +31,9 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
   );
 
   const [prompt, setPrompt] = useState("");
-  const [sourceText, setSourceText] = useState(""); // Extracted text from file or URL
+  const [sourceText, setSourceText] = useState("");
+  const [rawUrls, setRawUrls] = useState([]);        // Raw URL chips — up to 2 (not yet fetched)
+  const [rawFile, setRawFile] = useState(null);      // Raw File object (not yet extracted)
   const [isGenerating, setIsGenerating] = useState(false);
 
   /**
@@ -50,6 +52,8 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
   const resetForm = () => {
     setPrompt("");
     setSourceText("");
+    setRawUrls([]);
+    setRawFile(null);
     setLevelGameTypes(
       Array(numLevels)
         .fill()
@@ -72,8 +76,7 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
    * Generate questions for ALL levels at once using Bulk API
    */
   const handleGenerateAllQuestions = async () => {
-    // Validation: need at least a prompt OR extracted source text
-    if (!prompt.trim() && !sourceText.trim()) {
+    if (!prompt.trim() && !sourceText.trim() && rawUrls.length === 0 && !rawFile) {
       toast.error(t("enter_prompt") || "Please enter a prompt or provide a source (file/URL)");
       return;
     }
@@ -85,8 +88,8 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
 
     // Check if all levels have game types selected
     const allLevelsConfigured = Array.from({ length: numLevels }, (_, i) => i + 1).every(
-      (levelNum) => levelGameTypes[levelNum]  // .from  is used to create an array of level numbers from 1 to numLevels
-    );                                        // .every is used to check if all levels have game types selected
+      (levelNum) => levelGameTypes[levelNum]
+    );
 
     if (!allLevelsConfigured) {
       toast.error("Please select a game type for all levels");
@@ -94,11 +97,92 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
     }
 
     setIsGenerating(true);
-    console.log("🚀 [AIQuestionGenerator] Generating in BUG BULK MODE...");
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000/api/"; // here where the API URL is defined (the backend URL) 
-      const token = localStorage.getItem("token") || sessionStorage.getItem("token"); // here where the token is defined (the token) . token is a string that is used to authenticate the user
+      // ── Auto-extract File if attached but not yet extracted ──
+      let finalSourceText = sourceText;
+      let pdfFileName = "document";
+      if (rawFile && !finalSourceText.trim()) {
+        toast.loading("Extracting file content…", { id: "file-extract" });
+        try {
+          const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000/api/";
+          const token = localStorage.getItem("token") || sessionStorage.getItem("token");
+          const fd = new FormData();
+          fd.append("file", rawFile);
+          const resp = await axios.post(`${apiUrl}extract-file`, fd, {
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data" },
+          });
+          if (resp.data.success) {
+            pdfFileName = rawFile.name || "document";
+            // ✅ ADD SOURCE LABEL TO PDF (just like URLs)
+            finalSourceText = `=== SOURCE 1: 📄 PDF (${pdfFileName}) ===\n${resp.data.text}`;
+            setSourceText(finalSourceText);
+            toast.success("📄 File content extracted!", { id: "file-extract" });
+          } else {
+            toast.error(resp.data.message || "Failed to extract file.", { id: "file-extract" });
+            setIsGenerating(false);
+            return;
+          }
+        } catch (fileErr) {
+          toast.error(fileErr.response?.data?.message || "Failed to extract file.", { id: "file-extract" });
+          setIsGenerating(false);
+          return;
+        }
+      }
+
+      // ── Auto-fetch URLs if chips exist (extract EVEN if file was extracted - combine sources) ──
+      if (rawUrls.length > 0) {
+        const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000/api/";
+        const token = localStorage.getItem("token") || sessionStorage.getItem("token");
+        const combinedParts = [];
+
+        for (let i = 0; i < rawUrls.length; i++) {
+          const url = rawUrls[i].trim();
+          if (!url) continue;
+          const label = rawUrls.length > 1 ? `URL ${i + 1}` : "URL";
+          toast.loading(`Fetching ${label} content…`, { id: `url-fetch-${i}` });
+          try {
+            const resp = await axios.post(
+              `${apiUrl}extract-url`,
+              { url },
+              { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
+            );
+            if (resp.data.success) {
+              const sourceLabel = resp.data.source === "youtube_transcript"
+                ? "🎬 YouTube transcript"
+                : resp.data.source === "youtube_description"
+                  ? "🎬 YouTube info"
+                  : "🔗 Webpage";
+              // ✅ Adjust source numbering if PDF was already extracted
+              const sourceNumber = finalSourceText.trim() ? (i + 2) : (i + 1);
+              combinedParts.push(`=== SOURCE ${sourceNumber}: ${sourceLabel} (${url}) ===\n${resp.data.text}`);
+              toast.success(`${sourceLabel} extracted! (${label})`, { id: `url-fetch-${i}` });
+            } else {
+              toast.error(resp.data.message || `Failed to fetch ${label}.`, { id: `url-fetch-${i}` });
+              setIsGenerating(false);
+              return;
+            }
+          } catch (fetchErr) {
+            toast.error(fetchErr.response?.data?.message || `Failed to fetch ${label}.`, { id: `url-fetch-${i}` });
+            setIsGenerating(false);
+            return;
+          }
+        }
+
+        if (combinedParts.length > 0) {
+          // COMBINE with existing file content (don't replace it)
+          if (finalSourceText.trim()) {
+            finalSourceText = finalSourceText + "\n\n" + combinedParts.join("\n\n");
+          } else {
+            finalSourceText = combinedParts.join("\n\n");
+          }
+          setSourceText(finalSourceText);
+        }
+      }
+
+      console.log("🚀 [AIQuestionGenerator] Generating in BULK MODE...");
+      const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000/api/";
+      const token = localStorage.getItem("token") || sessionStorage.getItem("token");
 
       if (!token) {
         toast.error("Authentication required. Please log in.");
@@ -109,10 +193,10 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
       // Convert levelGameTypes object to a simple array in order
       const levelTypesArray = [];
       for (let i = 1; i <= numLevels; i++) {
-        levelTypesArray.push(levelGameTypes[i]); // levelTypesArray is like ["box", "box", "box", "box"] for 4 levels
+        levelTypesArray.push(levelGameTypes[i]);
       }
 
-      // Prepare bulk payload matching AIQuestionController expectation
+      // Prepare bulk payload
       const payload = {
         course: quizData.course,
         topic: quizData.topic,
@@ -120,7 +204,7 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
         numLevels: numLevels,
         level_types: levelTypesArray,
         ai_prompt: prompt.trim() || "Generate questions based on the provided source material.",
-        ...(sourceText.trim() && { source_text: sourceText.trim() }),
+        ...(finalSourceText.trim() && { source_text: finalSourceText.trim() }),
       };
 
       console.log("📦 Sending Bulk Payload:", payload);
@@ -252,6 +336,8 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
             sourceText={sourceText}
             onSourceReady={setSourceText}
             onClearSource={() => setSourceText("")}
+            onUrlChipsChange={(urls) => { setRawUrls(urls); if (urls.length === 0) setSourceText(""); }}
+            onFileChange={(file) => { setRawFile(file); if (!file) setSourceText(""); }}
           />
         </motion.div>
 
@@ -275,10 +361,10 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
       <motion.button
         type="button"
         onClick={handleGenerateAllQuestions}
-        disabled={isGenerating || (!prompt.trim() && !sourceText.trim())}
+        disabled={isGenerating || (!prompt.trim() && !sourceText.trim() && rawUrls.length === 0 && !rawFile)}
         className="btn-primary w-full flex items-center justify-center gap-2 mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
-        whileHover={{ scale: isGenerating || (!prompt.trim() && !sourceText.trim()) ? 1 : 1.02 }}
-        whileTap={{ scale: isGenerating || (!prompt.trim() && !sourceText.trim()) ? 1 : 0.98 }}
+        whileHover={{ scale: isGenerating || (!prompt.trim() && !sourceText.trim() && rawUrls.length === 0 && !rawFile) ? 1 : 1.02 }}
+        whileTap={{ scale: isGenerating || (!prompt.trim() && !sourceText.trim() && rawUrls.length === 0 && !rawFile) ? 1 : 0.98 }}
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
       >

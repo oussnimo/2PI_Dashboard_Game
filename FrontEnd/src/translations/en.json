@@ -47,7 +47,7 @@
   },
   "preview_quiz": "Preview",
   "back_to_levels": "Back to Levels",
-  "export_json": "Export SCORM",
+  "export_scorm": "Export SCORM",
   "save_changes": "Save Changes",
   "edit": "Edit",
   "important": "Important",

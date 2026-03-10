@@ -11,7 +11,21 @@ class AIQuestionController extends Controller
     public function generateQuestions(Request $request)
     {
         \Log::info('🚀 [AIQuestion] Bulk generation request received');
-        \Log::info('📋 Request data:', $request->all());
+        \Log::info('📋 Request data (meta):', [
+            'course'      => $request->input('course'),
+            'topic'       => $request->input('topic'),
+            'gameNumber'  => $request->input('gameNumber'),
+            'numLevels'   => $request->input('numLevels'),
+            'level_types' => $request->input('level_types'),
+            'ai_prompt'   => $request->input('ai_prompt'),
+            'source_text_length' => strlen($request->input('source_text', '')),
+        ]);
+        // Log the actual source text so we can verify PDF/URL content was received
+        if ($request->input('source_text')) {
+            \Log::info('📄 [AIQuestion] SOURCE TEXT RECEIVED (first 2000 chars):\n' . substr($request->input('source_text'), 0, 2000));
+        } else {
+            \Log::info('⚠️ [AIQuestion] No source_text provided — AI will use prompt only.');
+        }
 
         $validated = $request->validate([
             'course'        => 'required|string|max:100',
@@ -21,7 +35,7 @@ class AIQuestionController extends Controller
             'level_types'   => 'required|array',
             'level_types.*' => 'required|in:box,balloon',
             'ai_prompt'     => 'required|string|max:1000',
-            'source_text'   => 'nullable|string|max:8000', // Optional extracted text from file/URL
+            'source_text'   => 'nullable|string|max:16000', // Optional extracted text from file/URL(s)
         ]);
 
         if (count($validated['level_types']) !== $validated['numLevels']) {
@@ -40,7 +54,7 @@ class AIQuestionController extends Controller
         for ($i = 0; $i < $numLevels; $i++) {
             $levelNum = $i + 1;
             $type = $levelTypes[$i];
-            
+
             if ($type === 'box') {
                 $levelsDescription .= "- Niveau {$levelNum} : TYPE BOX → 5 questions avec UNE réponse courte chacune\n";
             } else {
@@ -52,27 +66,57 @@ class AIQuestionController extends Controller
         $sourceTextSection = '';
         if (!empty($validated['source_text'])) {
             $sourceTextSection = "
-=== TEXTE SOURCE (CONTENU DU COURS) ===
+=== TEXTES SOURCE REÇUS ===
 {$validated['source_text']}
-=== FIN DU TEXTE SOURCE ===
+=== FIN DES TEXTES SOURCE ===
 
-INSTRUCTIONS STRICTES POUR LE TEXTE SOURCE :
-- Tu DOIS baser tes questions UNIQUEMENT sur le contenu réel du texte source ci-dessus.
-- Les questions doivent porter sur les CONCEPTS, les RÈGLES, les EXEMPLES et les FAITS présents dans ce texte.
-- Il est INTERDIT de poser des questions sur le titre de la vidéo/document, le nom de l'auteur, le niveau mentionné dans le titre, ou toute autre métadonnée.
-- Il est INTERDIT de faire référence à \"la vidéo\", \"le titre\", \"le document\" ou \"le texte\" dans les questions. Formule les questions directement sur le savoir, comme si c'était le prof qui interroge l'élève après le cours.
-- Exemple INTERDIT : \"Qu'est-ce qui est mentionné dans le titre ?\", \"Quel niveau est cité dans la vidéo ?\"
-- Exemple CORRECT : \"Combien font 3/4 + 1/4 ?\", \"Quelle fraction est équivalente à 1/2 ?\"
+� RÈGLE CRITIQUEMENT IMPORTANTE - À RESPECTER SANS EXCEPTION:
+
+1. VÉRIFIE COMBIEN DE SOURCES TU AS:
+   - Compte les lignes avec \"=== SOURCE N:\"
+   - Si tu trouves SOURCE 1, SOURCE 2 (ou plus), tu as PLUSIEURS sources
+   - Si tu as qu'une seule source, utilise juste celle-ci
+
+2. SI TU AS PLUSIEURS SOURCES:
+   ⚠️ OBLIGATION ABSOLUE: CHAQUE QUESTION DOIT VENIR D'UNE SOURCE DIFFÉRENTE
+   - Les questions DOIVENT alterner ou se mélanger entre les sources
+   - Tu ne peux PAS faire 5 questions du PDF et 0 de l'URL
+   - Tu ne peux PAS ignorer une source entière
+   - INTERDIT ABSOLU: Générer des questions d'une seule source quand tu en as plusieurs
+
+   EXEMPLE DE CE QUI EST INTERDIT:
+   ❌ Niveau 1: Q1(PDF), Q2(PDF), Q3(PDF), Q4(PDF), Q5(PDF) ← INTERDIT, pas d'URL!
+
+   EXEMPLE DE CE QUI EST OBLIGATOIRE:
+   ✅ Niveau 1: Q1(PDF), Q2(URL), Q3(PDF), Q4(URL), Q5(PDF) ← BON, mélange les deux
+   ✅ Niveau 1: Q1(PDF), Q2(PDF), Q3(URL), Q4(URL), Q5(URL) ← BON aussi, les deux sources utilisées
+
+3. CHAQUE QUESTION DOIT SPÉCIFIER SA SOURCE MENTALEMENT:
+   - Avant de générer une question, demande-toi: \"Cette question vient de SOURCE 1 ou SOURCE 2?\"
+   - Si tu génères trop de questions de SOURCE 1, génère la prochaine de SOURCE 2
+   - Si SOURCE 1 parle d'addition, SOURCE 2 de triangles → la question DOIT être sur les triangles, pas juste labellisée comme SOURCE 2
+   - Les questions DOIVENT porter sur le SUJET RÉEL de chaque source (pas juste les labelliser)
+
+🎯 CAS SPÉCIAL - Si l'instruction du professeur dit \"level 1 from URL, level 2 from PDF\":
+   * UNIQUEMENT dans ce cas, ignore la règle du mélange
+   * Utilise UNIQUEMENT la source spécifiée pour chaque niveau
+   * Sinon, applique TOUJOURS la règle du mélange
+
+- INTERDIT ABSOLU: Questions sur MÉTADONNÉES (titres, sujets, noms d'exercices)
+- INTERDIT: Ajouter des labels comme \"(Source : PDF)\" ou \"(Source : URL)\" dans les questions
+- CORRECT: \"Combien font 3/4 + 1/4 ?\", \"Comment calcule-t-on l'aire d'un triangle ?\", \"Quelle est la définition de l'addition ?\"
 ";
         }
 
        $userPrompt = "
-{$sourceTextSection}
 Le professeur demande : \"{$validated['ai_prompt']}\"
 
-INFORMATIONS :
-Cours : {$validated['course']}
-Sujet : {$validated['topic']}
+COURS : {$validated['course']}
+SUJET : {$validated['topic']}
+
+{$sourceTextSection}
+
+NOTE : Si l'instruction du professeur spécifie \"level [N] from [SOURCE]\", respectez STRICTEMENT cette directive.
 
 GÉNÈRE EXACTEMENT {$numLevels} NIVEAUX :
 {$levelsDescription}
@@ -110,7 +154,14 @@ Voici le format JSON EXACT que tu dois respecter (exemple pour 2 niveaux box et 
                     \"text\": \"10 ÷ 2 = ?\",
                     \"answer\": \"5\"
                 },
-                // ... (génère les 2 autres questions ici pour faire exactement 5)
+                {
+                    \"text\": \"Combien font 6 + 7 ?\",
+                    \"answer\": \"13\"
+                },
+                {
+                    \"text\": \"8 × 4 = ?\",
+                    \"answer\": \"32\"
+                }
             ]
         },
         {
@@ -141,7 +192,30 @@ Voici le format JSON EXACT que tu dois respecter (exemple pour 2 niveaux box et 
                     \"text\": \"1/5\",
                     \"is_true\": false
                 },
-                // ... (génère les 6 autres réponses ici pour faire exactement 10)
+                {
+                    \"text\": \"3/6\",
+                    \"is_true\": true
+                },
+                {
+                    \"text\": \"2/3\",
+                    \"is_true\": false
+                },
+                {
+                    \"text\": \"4/8\",
+                    \"is_true\": true
+                },
+                {
+                    \"text\": \"3/4\",
+                    \"is_true\": false
+                },
+                {
+                    \"text\": \"5/10\",
+                    \"is_true\": true
+                },
+                {
+                    \"text\": \"2/5\",
+                    \"is_true\": false
+                }
             ]
         }
     ]
@@ -150,16 +224,20 @@ Voici le format JSON EXACT que tu dois respecter (exemple pour 2 niveaux box et 
 Génère maintenant les {$numLevels} niveaux demandés en suivant EXACTEMENT ce format.
         ";
 
+        // ── Log the FULL assembled prompt sent to the AI ──────────────────────
+        \Log::info("📝 [AIQuestion] FULL SYSTEM PROMPT:\n" . $systemPrompt);
+        \Log::info("📝 [AIQuestion] FULL USER PROMPT SENT TO AI:\n" . $userPrompt);
+
         try {
             $apiKey = config('services.groq.api_key');
-            
+
             if (!$apiKey) {
                 \Log::warning('⚠️ GROQ_API_KEY is missing. Using fallback mock data.');
                 return $this->getMockBulkData($validated);
             }
 
             \Log::info('🌐 [AIQuestion] Calling Groq API matching user provided script...');
-            
+
             $modelsToTry = [
                 'llama-3.1-8b-instant',
                 'llama-3.3-70b-versatile',
@@ -171,7 +249,7 @@ Génère maintenant les {$numLevels} niveaux demandés en suivant EXACTEMENT ce 
 
             foreach ($modelsToTry as $model) {
                 \Log::info("🔄 Trying Groq API with model: {$model}");
-                
+
                 $response = Http::withHeaders([
                     'Authorization' => "Bearer {$apiKey}",
                     'Content-Type'  => 'application/json',
@@ -187,7 +265,7 @@ Génère maintenant les {$numLevels} niveaux demandés en suivant EXACTEMENT ce 
 
                 if ($response->successful()) {
                     $usedModel = $model;
-                    break; 
+                    break;
                 } else {
                     $status = $response->status();
                     $body = $response->body();
@@ -201,10 +279,23 @@ Génère maintenant les {$numLevels} niveaux demandés en suivant EXACTEMENT ce 
 
             $result  = $response->json();
             $content = $result['choices'][0]['message']['content'];
-            
+
             \Log::info("RAW AI CONTENT ($usedModel):\n" . $content);
 
-            $content = preg_replace('/```json\s*|\s*```/', '', trim($content));
+            // ── Clean AI output before parsing ───────────────────────────────
+            // 1. Strip markdown code fences (```json ... ``` or ``` ... ```)
+            $content = preg_replace('/^```(?:json)?\s*/m', '', $content);
+            $content = preg_replace('/\s*```\s*$/m', '', $content);
+            // 2. Extract only the JSON object (between first { and last })
+            if (preg_match('/\{.*\}/s', $content, $jsonMatch)) {
+                $content = $jsonMatch[0];
+            }
+            // 3. Strip JS-style single-line comments (// ...)
+            $content = preg_replace('/\/\/[^\n\r"]*(?=[\n\r,}\]])/u', '', $content);
+            // 4. Remove trailing commas before ] or } (invalid JSON)
+            $content = preg_replace('/,\s*([\]\}])/s', '$1', $content);
+
+            $content = trim($content);
             $aiData = json_decode($content, true);
 
             if (!$aiData || !isset($aiData['levels'])) {
@@ -213,6 +304,7 @@ Génère maintenant les {$numLevels} niveaux demandés en suivant EXACTEMENT ce 
                     'success' => false,
                     'message' => 'Format JSON invalide reçu de l\'IA. Réessaie.'
                 ], 500);
+
             }
 
             if (count($aiData['levels']) !== $numLevels) {

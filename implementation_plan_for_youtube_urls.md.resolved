@@ -1,0 +1,74 @@
+# Improve YouTube Transcript Extraction
+
+## Problem
+
+When users paste a YouTube URL, the backend tries 3 tiers to get the transcript:
+1. **Tier-1:** YouTube's public `timedtext` XML API → **fails** (deprecated for most videos)
+2. **Tier-2:** Scrape `ytInitialPlayerResponse` from the watch page → **fails** (YouTube obfuscates this now)
+3. **Tier-3:** Fall back to video title + description → gives very shallow questions ❌
+
+The root cause is that YouTube has progressively blocked these old methods. We need a working new approach.
+
+## Proposed Solution: Replace Tier-2 with the `youtubei` Internal API
+
+YouTube's internal client API (`https://www.youtubei.googleapis.com/youtubei/v1/player`) still reliably returns caption track URLs when called with a proper client identity payload. This approach:
+- Requires **no API key**
+- Works for videos with **auto-generated subtitles** (most videos have these)
+- Is used by many open-source tools (including `mrmysql/youtube-transcript` PHP library)
+
+## Proposed Changes
+
+### [SourceInputController.php](file:///c:/Users/Usuario/Desktop/test_del/2pi-Dashboard-sprint-2-SCORM-package-main/BackEnd/app/Http/Controllers/SourceInputController.php)
+
+#### [MODIFY] [SourceInputController.php](file:///c:/Users/Usuario/Desktop/test_del/2pi-Dashboard-sprint-2-SCORM-package-main/BackEnd/app/Http/Controllers/SourceInputController.php)
+
+Replace the current [handleYoutube()](file:///c:/Users/Usuario/Desktop/test_del/2pi-Dashboard-sprint-2-SCORM-package-main/BackEnd/app/Http/Controllers/SourceInputController.php#141-260) method's Tier-2 (page scrape) with a new **`fetchViaYoutubeiApi()`** method that calls the internal `youtubei/v1/player` endpoint:
+
+**New extraction flow:**
+1. **Tier-1** (keep as-is): `timedtext` XML API — fast, works on some videos
+2. **Tier-2 (NEW):** `youtubei.googleapis.com/youtubei/v1/player` POST request with a web client payload → extracts caption track URL from JSON → fetches and parses XML caption file
+3. **Tier-3** (keep as-is): Title + description fallback with clear warning
+
+**The `youtubei` API call looks like this:**
+```php
+POST https://www.youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8
+Content-Type: application/json
+
+{
+  "videoId": "VIDEO_ID_HERE",
+  "context": {
+    "client": {
+      "clientName": "WEB",
+      "clientVersion": "2.20231121.08.00",
+      "hl": "en",
+      "gl": "US"
+    }
+  }
+}
+```
+The response JSON contains `captions.playerCaptionsTracklistRenderer.captionTracks[].baseUrl` — same format as before, but now reliably returned.
+
+> [!IMPORTANT]
+> The API key `AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8` is YouTube's **own public key** embedded in their web app. It is safe to use and requires no registration.
+
+## Verification Plan
+
+### Automated Test (via log reading)
+
+After implementing, paste one of the previously failing YouTube URLs and click Generate. Then run:
+
+```powershell
+Get-Content storage\logs\laravel.log | Select-String -Pattern "Tier-|transcript|caption" | Select-Object -Last 20
+```
+
+**Expected result:** Should see `✅ [Tier-2] Transcript via youtubei API` instead of the old `⚠️ [Tier-3] No captions available`.
+
+### Manual Verification
+
+1. Open the app in the browser (Vite dev server)
+2. Open the AI Question Generator
+3. Paste this YouTube URL (a well-known educational video with auto-captions):
+   - `https://www.youtube.com/watch?v=aircAruvnKk` (3Blue1Brown — Neural Networks)
+4. Click **Generate All Questions**
+5. **Expected:** Toast shows `🎬 YouTube transcript extracted!` (not `YouTube info extracted`)
+6. **Check the generated questions** — they should reference specific concepts from the video (neural networks, layers, neurons) not generic math questions
