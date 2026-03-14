@@ -1,17 +1,17 @@
 <?php
-
+ 
 namespace App\Http\Controllers;
-
+ 
 use Illuminate\Http\Request;
 use ZipArchive;
-
+ 
 class ExportController extends Controller
 {
     public function exportQuizAsZip(Request $request)
     {
         try {
             \Log::info('📦 [Export] Starting SCORM export');
-
+ 
             $validated = $request->validate([
                 'course'     => 'required|string',
                 'topic'      => 'required|string',
@@ -19,26 +19,31 @@ class ExportController extends Controller
                 'numLevels'  => 'required|integer',
                 'levels'     => 'required|array',
             ]);
-
+ 
             $quizData    = $validated;
             $scormTitle  = "{$quizData['course']} - {$quizData['topic']}";
             $timestamp   = now()->format('Y-m-d_H-i-s');
             $zipFilename = "scorm_quiz_{$timestamp}.zip";
             $zipPath     = storage_path("app/temp/{$zipFilename}");
-
+ 
             $gamePath = storage_path("app/games/game_{$quizData['gameNumber']}");
-
+ 
+            // Si le dossier exact n'existe pas, utiliser le premier dossier disponible
             if (!file_exists($gamePath)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Dossier du jeu introuvable : {$gamePath}"
-                ], 404);
+                $available = glob(storage_path('app/games/game_*'), GLOB_ONLYDIR);
+                if (empty($available)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Aucun dossier de jeu disponible.'
+                    ], 404);
+                }
+                $gamePath = $available[0];
             }
-
+ 
             if (!file_exists(storage_path('app/temp'))) {
                 mkdir(storage_path('app/temp'), 0755, true);
             }
-
+ 
             $zip = new ZipArchive();
             if ($zip->open($zipPath, ZipArchive::CREATE) !== TRUE) {
                 return response()->json([
@@ -46,10 +51,10 @@ class ExportController extends Controller
                     'message' => 'Cannot create ZIP'
                 ], 500);
             }
-
+ 
             $zip->addFromString('imsmanifest.xml', $this->getManifest($scormTitle));
             $zip->addFromString('scorm.js', $this->getScormJs());
-
+ 
             $indexHtmlPath = "{$gamePath}/index.html";
             if (!file_exists($indexHtmlPath)) {
                 return response()->json([
@@ -57,7 +62,7 @@ class ExportController extends Controller
                     'message' => 'index.html introuvable dans le dossier du jeu'
                 ], 404);
             }
-
+ 
             $htmlContent = file_get_contents($indexHtmlPath);
             if (strpos($htmlContent, 'scorm.js') === false) {
                 $htmlContent = str_replace(
@@ -67,7 +72,7 @@ class ExportController extends Controller
                 );
             }
             $zip->addFromString('index.html', $htmlContent);
-
+ 
             $gameFiles = [
                 'index.js',
                 'index.wasm',
@@ -77,7 +82,7 @@ class ExportController extends Controller
                 'index.apple-touch-icon.png',
                 'index.icon.png',
             ];
-
+ 
             foreach ($gameFiles as $filename) {
                 $filePath = "{$gamePath}/{$filename}";
                 if (file_exists($filePath)) {
@@ -86,19 +91,31 @@ class ExportController extends Controller
                     \Log::warning("Fichier Godot manquant : {$filename}");
                 }
             }
-
+ 
+            // ✅ JSON corrigé — format attendu par Godot
             $zip->addFromString('data/levels_data.json', json_encode([
-                'title'  => $scormTitle,
-                'levels' => $quizData['levels']
+                'levels'      => $quizData['levels'],
+                'player_info' => [
+                    'current_level' => 1,
+                    'lives'         => 3,
+                    'score'         => 0
+                ]
             ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-
+ 
             $zip->close();
-
-            \Log::info("Export SCORM ready: {$zipFilename}");
-
-            return response()->download($zipPath, $zipFilename)
-                             ->deleteFileAfterSend(true);
-
+ 
+            \Log::info("✅ [Export] SCORM package ready: {$zipFilename}");
+ 
+            // Encode as base64 and return JSON
+            $zipContent = file_get_contents($zipPath);
+            @unlink($zipPath);
+ 
+            return response()->json([
+                'success'  => true,
+                'filename' => $zipFilename,
+                'data'     => base64_encode($zipContent),
+            ]);
+ 
         } catch (\Exception $e) {
             \Log::error('Export error: ' . $e->getMessage());
             return response()->json([
@@ -107,7 +124,7 @@ class ExportController extends Controller
             ], 500);
         }
     }
-
+ 
     private function getScormJs()
     {
         $js  = 'function scorm_initialize() {' . "\n";
@@ -138,7 +155,7 @@ class ExportController extends Controller
         $js .= 'scorm_initialize();' . "\n";
         return $js;
     }
-
+ 
     private function getManifest($title)
     {
         $id = 'quiz_' . md5($title);

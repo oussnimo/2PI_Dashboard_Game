@@ -152,35 +152,43 @@ function Preview({ data, onDataChange, onCreateNew }) {
       const userId = user?.id;
       const payload = { ...editedData, game_id: isSent, user_id: userId };
 
+      // No responseType:"blob" — server now returns JSON with base64 data
       const response = await api.post(`/export-quiz-zip`, payload, {
-        responseType: "blob",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        timeout: 60000,
+        headers: { "Content-Type": "application/json" },
       });
 
-      // download the zip file
-      const blob = new Blob([response.data], { type: "application/zip" });
+      const { success, filename, data: base64 } = response.data;
+
+      if (!success || !base64) {
+        notification.error(response.data.message || "Export failed on server");
+        return;
+      }
+
+      // Decode base64 → binary → Blob → download
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: "application/zip" });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
-      const ts = new Date().toISOString().split(".")[0].replace(/:/g, "-");
       link.href = url;
-      link.setAttribute("download", `scorm_quiz_${ts}.zip`);
+      link.setAttribute("download", filename || `scorm_quiz.zip`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
 
       notification.success(t("quiz_exported_successfully") || "Quiz exported");
     } catch (error) {
-      addNotification(
-        t("preview.exportError") || "Export Error",
-        `${t("course_name") || "Course"}: ${editedData.course} - ${t("preview.exportErrorMessage") ||
-        "An error occurred while exporting the quiz"
-        }`,
-        "error",
+      console.error("Export error:", error.message, error.response?.data);
+      notification.error(
+        error.response?.data?.message ||
+        t("failed_to_export_quiz") ||
+        "Failed to export quiz"
       );
-      notification.error(t("failed_to_export_quiz") || "Failed to export quiz");
-      console.error("Export error", error);
     }
   };
 
